@@ -11,6 +11,7 @@
     return el;
   };
   const current = () => state.bindings.find(b => b.id === state.id);
+  const attachmentChanged = () => !!current() && ($("attachment").value || "") !== (current().attachmentKey || "");
   const formatTime = value => {
     if (!value) return "";
     const date = new Date(value);
@@ -28,9 +29,9 @@
     };
     return descriptions[binding.status] || { label: "监控中", kind: "", description: "规则已启用，正在等待下次检查。" };
   };
-  function notice(message, error = false) {
-    $("notice").textContent = message;
-    $("notice").className = error ? "notice error" : "notice";
+  function notice(message, error = false, tone = "") {
+    $("notice-message").textContent = message;
+    $("notice").className = error ? "notice error" : `notice ${tone}`.trim();
     $("notice").hidden = !message;
   }
   function controls() {
@@ -42,6 +43,9 @@
     $("save-rule").disabled = state.busy || !state.parent;
     $("preview-rule").disabled = state.busy || !state.parent;
     $("repair-attachment").disabled = state.busy || !state.parent;
+    $("derive-rule").disabled = state.busy || !state.parent;
+    $("save-attachment").hidden = !attachmentChanged();
+    $("save-attachment").disabled = state.busy || !state.parent;
     $("action-dock").hidden = $("editor").hidden;
     $("dirty-label").hidden = !state.dirty;
   }
@@ -86,10 +90,11 @@
     $("existing-actions").hidden = !binding;
     $("remove-hint").hidden = !binding;
     $("rule-error").hidden = !binding?.error;
-    $("rule-error").textContent = binding?.error || "";
+    const changed = attachmentChanged();
+    $("rule-error").textContent = binding?.error ? (changed ? "已保存规则的检查结果（新选择尚未保存）：" : "") + binding.error : "";
     $("editor-kicker").textContent = binding ? "监控规则" : "新建监控";
     if (binding) {
-      const info = status(binding);
+      const info = changed ? {label: "待保存", kind: "pending", description: "附件选择已修改，尚未保存；监控仍使用原绑定。点击附件下方「保存并修复绑定」后生效。"} : status(binding);
       $("rule-status").textContent = info.label;
       $("rule-status").className = `badge ${info.kind}`;
       $("rule-summary").textContent = info.description;
@@ -186,8 +191,14 @@
     state.parent = parent;
     let chosen = valid ? before : attachments.length === 1 ? attachments[0].key : "";
     attachmentOptions(parent, chosen);
-    if (chosen !== before) markDirty();
-    if (valid) notice("附件列表已刷新，当前绑定仍有效。你可以继续修改并保存规则。");
+    if (chosen !== before || attachmentChanged()) markDirty();
+    else renderState();
+    if (attachmentChanged()) notice(chosen
+      ? "当前选择可用，但尚未保存。点击附件下方「保存并修复绑定」完成修复。"
+      : attachments.length ? "找到多个 PDF，请选择要替换的附件，再保存并修复绑定。"
+      : "当前没有 PDF，已选择下次更新时新增附件。点击「保存并修复绑定」后生效。", false, "pending");
+    else if (valid && current()?.error) notice("附件列表已刷新，当前选择可用；已保存规则仍有检查错误。请保存规则或重新检查，详情见下方。", false, "pending");
+    else if (valid) notice("附件列表已刷新，已保存的附件绑定仍有效。");
     else if (attachments.length === 1) notice("已选择当前唯一的 PDF。请核对附件名称，再点击下方「保存监控规则」完成修复。");
     else if (!attachments.length) notice("当前没有 PDF，已选择下次更新时新增附件。点击下方「保存监控规则」完成修复。");
     else notice("找到多个 PDF，请在下拉框选择要替换的附件，再点击下方「保存监控规则」。");
@@ -236,7 +247,7 @@
   function markDirty() {
     state.dirty = true;
     $("preview-panel").hidden = true;
-    controls();
+    renderState();
   }
   function config(requireAttachment = true) {
     if (!state.parent) throw new Error("请先在 Zotero 中选择要绑定的论文条目。");
@@ -278,16 +289,27 @@
     const args = window.arguments?.[0];
     if (!args?.api) throw new Error("无法连接 PDF 更新监控插件。请从 Zotero 的插件菜单重新打开此窗口。");
     state.api = args.api;
+    $("notice-close").addEventListener("click", () => notice(""));
     $("new-binding").addEventListener("click", () => action(() => startNew()));
     $("check-all").addEventListener("click", () => action(async () => {
       await state.api.checkAll(); await refresh();
-      notice("检查完成。正在写入的文件会在稳定后识别，待更新条目会显示在列表中。");
+      const errors = state.bindings.filter(b => b.enabled && b.error).length;
+      notice(errors ? `检查完成，${errors} 条规则仍需处理，原因见条目中的提示。` : "检查完成。正在写入的文件会在稳定后识别，待更新条目会显示在列表中。", !!errors);
     }));
     $("browse").addEventListener("click", () => action(async () => {
       const path = await state.api.pickPath($("mode").value, window);
       if (path) { $("path").value = path; markDirty(); }
     }));
     $("repair-attachment").addEventListener("click", () => action(() => repairAttachment()));
+    $("derive-rule").addEventListener("click", () => action(async () => {
+      const file = await state.api.pickPath("file", window);
+      if (!file) return;
+      const rule = await state.api.ruleFromFile(file);
+      for (const key of ["mode", "path", "pattern", "order"]) $(key).value = rule[key];
+      setSourceMode(); markDirty();
+      showPreview(await state.api.preview(config(false)));
+      notice("已从所选 PDF 生成同系列版本规则。请核对下方候选文件，再保存监控规则。", false, "pending");
+    }));
     $("mode").addEventListener("change", setSourceMode);
     $("order").addEventListener("change", setSourceMode);
     $("rule-form").addEventListener("input", markDirty);

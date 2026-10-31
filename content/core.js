@@ -14,8 +14,9 @@ var DraftPDFWatch = {
     this.tail = task.catch(e => Zotero.logError(e));
     return task;
   },
-  async init(pluginID) {
+  async init(pluginID, version) {
     this.pluginID = pluginID;
+    this.version = version || '';
     this.loadBannerDismissals();
     this.statePath = PathUtils.join(Services.dirsvc.get('ProfD', Ci.nsIFile).path, 'draft-pdf-watch.json');
     if (await IOUtils.exists(this.statePath)) {
@@ -114,7 +115,7 @@ var DraftPDFWatch = {
   },
   open(parentID = null) {
     if (this.manager && !this.manager.closed) { this.manager.close(); }
-    this.manager = Zotero.getMainWindow().openDialog('chrome://draftwatch/content/manager.xhtml', 'draft-pdf-watch', 'chrome,centerscreen,resizable,width=1060,height=780', { api: this, parentID });
+    this.manager = Zotero.getMainWindow().openDialog('chrome://draftwatch/content/manager.xhtml?v=' + encodeURIComponent(this.version || ''), 'draft-pdf-watch', 'chrome,centerscreen,resizable,width=1060,height=780', { api: this, parentID });
   },
   async getParent(parentID) {
     const parent = await Zotero.Items.getAsync(Number(parentID));
@@ -135,6 +136,23 @@ var DraftPDFWatch = {
     fp.init(win, mode === 'folder' ? '选择论文版本文件夹' : '选择论文 PDF', mode === 'folder' ? fp.modeGetFolder : fp.modeOpen);
     if (mode !== 'folder') fp.appendFilter('PDF', '*.pdf');
     return (await fp.show()) === fp.returnOK ? fp.file : null;
+  },
+  async ruleFromFile(filePath) {
+    if (typeof filePath !== 'string' || !filePath || !PathUtils.isAbsolute(filePath)) {
+      throw new Error('请选择 PDF 文件的完整路径。');
+    }
+    let file;
+    try { file = await IOUtils.stat(filePath); }
+    catch (_error) { throw new Error('无法读取所选文件的信息，请确认文件存在且可以访问。'); }
+    const name = PathUtils.filename(filePath);
+    if (file.type !== 'regular' || !/\.pdf$/i.test(name)) throw new Error('请选择一个已存在的 PDF 文件。');
+    const match = /^(.*)_v(\d+(?:\.\d+)*)_(\d{4}-\d{2}-\d{2})\.pdf$/.exec(name);
+    if (!match || !match[1].trim() || /[*?]/.test(match[1])) {
+      throw new Error('无法自动识别此文件的版本命名。请使用“论文前缀_v1.0.2_2026-10-31.pdf”格式，或手动填写文件夹与匹配规则。');
+    }
+    const pattern = match[1] + '_v*_????-??-??.pdf';
+    if (pattern.length > 200) throw new Error('文件名前缀过长，无法自动生成匹配规则，请手动填写。');
+    return {mode: 'folder', path: PathUtils.parent(filePath), pattern, order: 'version'};
   },
   glob(pattern) {
     if (!pattern || pattern.length > 200 || /[\\/]/.test(pattern)) throw new Error('匹配规则只填写文件名，例如 paper_v*.pdf');

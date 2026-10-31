@@ -34,6 +34,10 @@ def build(output, tag=None):
             content = path.read_bytes()
             if path.suffix in ('.js', '.css', '.xhtml', '.ftl', '.json') or path.name == 'LICENSE':
                 content = content.replace(b'\r\n', b'\n')
+            if path.name == 'manager.xhtml':
+                # Chrome resources can otherwise retain a prior release's UI.
+                for asset in ('manager.css', 'manager.js'):
+                    content = content.replace(('"' + asset + '"').encode(), ('"' + asset + '?v=' + version + '"').encode())
             archive.writestr(info, content)
     digest = hashlib.sha256(package.read_bytes()).hexdigest()
     updates = {'addons': {app['id']: {'updates': [{

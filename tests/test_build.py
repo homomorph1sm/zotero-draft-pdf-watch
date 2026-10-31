@@ -27,6 +27,9 @@ class ReleaseTests(unittest.TestCase):
                 self.assertFalse(any(n.startswith('tests/') or n.endswith('.sqlite') for n in names))
                 manifest = json.loads(archive.read('manifest.json'))
                 self.assertEqual(manifest['version'], entry['version'])
+                page = archive.read('content/manager.xhtml').decode('utf-8')
+                for asset in ('manager.css', 'manager.js'):
+                    self.assertIn('"' + asset + '?v=' + entry['version'] + '"', page)
                 self.assertTrue(manifest['applications']['zotero']['update_url'].endswith('/releases/latest/download/updates.json'))
             builder.build(target)
             self.assertEqual(first, package.read_bytes())

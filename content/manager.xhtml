@@ -13,7 +13,7 @@
     <div><div class="eyebrow">DRAFT PDF WATCH</div><h1>论文 PDF 更新监控</h1></div>
     <button id="check-all" class="action secondary" type="button">立即检查全部</button>
   </header>
-  <div id="notice" class="notice" role="status" aria-live="polite" hidden="hidden"></div>
+  <div id="notice" class="notice" hidden="hidden"><span id="notice-message" role="status" aria-live="polite"></span><button id="notice-close" type="button" aria-label="关闭此提示" title="关闭此提示">×</button></div>
   <main class="workspace">
     <aside class="sidebar" aria-label="监控条目">
       <div class="sidebar-heading"><h2>监控条目</h2><span id="binding-count" class="count">0</span></div>
@@ -39,12 +39,13 @@
         <div id="rule-error" class="inline-error" role="status" hidden="hidden"></div>
         <form id="rule-form">
           <fieldset id="form-fields">
-            <div class="field"><div class="attachment-heading"><label for="attachment">要替换的现有 PDF 附件</label><button id="repair-attachment" class="action secondary compact" type="button">刷新附件列表 / 修复绑定</button></div><select id="attachment"></select><p id="attachment-hint" class="hint"></p></div>
+            <div class="field"><div class="attachment-heading"><label for="attachment">要替换的现有 PDF 附件</label><button id="repair-attachment" class="action secondary compact" type="button">刷新附件列表 / 修复绑定</button></div><select id="attachment"></select><p id="attachment-hint" class="hint"></p><button id="save-attachment" class="action primary compact" type="submit" form="rule-form" hidden="hidden">保存并修复绑定</button></div>
             <div class="two-columns">
               <div class="field"><label for="mode">监控来源</label><select id="mode"><option value="folder">文件夹中的不同版本</option><option value="file">固定 PDF 文件</option></select></div>
               <div class="field"><label for="order">新版本选择方式</label><select id="order"><option value="version">文件名自然排序（v2 → v10）</option><option value="mtime">文件修改时间（较新优先）</option></select></div>
             </div>
             <div class="field"><label id="path-label" for="path">PDF 所在文件夹</label><div class="path-row"><input id="path" type="text" placeholder="选择文件夹，或粘贴完整路径" autocomplete="off" spellcheck="false" required="required" /><button id="browse" class="action secondary" type="button">浏览…</button></div></div>
+            <div class="source-assist"><button id="derive-rule" class="action secondary compact" type="button">从一份正文 PDF 生成规则…</button><p class="hint">适用于「论文名_v1.0.42_2026-10-31.pdf」。选择正文后，只匹配同名前缀、版本号和日期的文件，排除补充材料与日期后带冲突标记的副本。生成后预览，再保存。</p></div>
             <div id="pattern-field" class="field"><label for="pattern">文件名匹配规则</label><input id="pattern" type="text" value="*.pdf" placeholder="例如 paper_v*.pdf" autocomplete="off" spellcheck="false" /><p class="hint">* 匹配任意长度字符，? 匹配一个字符。请用论文专属前缀，例如 paper_v*.pdf。</p></div>
             <p id="order-hint" class="hint rule-hint">按文件名中的数字自然排序；同一论文应使用一致前缀，如 paper_v2.pdf、paper_v10.pdf。</p>
             <div class="options-box">

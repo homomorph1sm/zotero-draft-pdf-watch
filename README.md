@@ -16,6 +16,10 @@
 4. 选择需要替换的现有 PDF，保存规则。默认发现更新后通知，手动点击更新。
 5. 旧绑定失效时，点击「刷新附件列表 / 修复绑定」，核对当前 PDF，再保存。
 
+对于 `Manuscript_v1.0.42_2026-10-31.pdf` 这样的命名，可点击「从一份正文 PDF 生成规则…」，选择一份正文。插件生成 `Manuscript_v*_????-??-??.pdf`，按版本数字、文件名日期排序，并展示匹配预览；确认后保存。此规则不会匹配 `Manuscript_supplement_…`，也不会匹配日期之后带同步冲突后缀的副本。正文和补充材料放在同一目录时，不要用 `*.pdf` 混选。
+
+刷新附件列表只改变表单中的选择；选择与已保存绑定不同会显示「待保存」。点击附件下方的「保存并修复绑定」后才生效。管理界面顶部的成功、错误提示均可用右侧「×」关闭，关闭不影响编辑或监控。
+
 新 PDF 复制并校验成功后，旧附件及其批注移入 Zotero 回收站；父条目、独立笔记及其他附件保留。来源文件不会被删除。自动模式可按条目开启。
 
 窗口内的黄色通知条右侧有「×」关闭按钮。关闭会记住当前提醒，监控继续运行；同一提醒不会随定时检查或重启重复显示，新的 PDF 或错误会再次提醒。仍可从工具菜单打开监控面板处理待办。
@@ -39,11 +43,19 @@ python build.py
 
 输出位于 `dist/`。以后可以 `git pull --ff-only` 后再次构建并安装新的 XPI。**仅执行 git pull 不会更新 Zotero 中已经安装的插件。**
 
-测试无需 npm 依赖：
+核心逻辑与构建测试无需 npm 依赖：
 
 ```sh
 node --test tests/*.test.cjs
 python -m unittest discover -s tests -p 'test_*.py'
+```
+
+管理界面回归测试使用无界面浏览器和模拟文库，不访问实际 Zotero 数据或桌面；发布流程也运行这些检查：
+
+```sh
+npm install --no-save --package-lock=false --ignore-scripts playwright@1.62.1
+npx playwright install chromium
+node tests/manager-ui.cjs
 ```
 
 ## 发布新版（仓库维护者）

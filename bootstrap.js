@@ -1,5 +1,5 @@
 var chromeHandle, scope;
-async function startup({ id, rootURI }) {
+async function startup({ id, rootURI, version }) {
   await Zotero.initializationPromise;
   const aom = Cc['@mozilla.org/addons/addon-manager-startup;1'].getService(Ci.amIAddonManagerStartup);
   chromeHandle = aom.registerChrome(Services.io.newURI(rootURI + 'manifest.json'), [
@@ -9,7 +9,7 @@ async function startup({ id, rootURI }) {
   for (const win of Zotero.getMainWindows()) onMainWindowLoad({ window: win });
   Services.scriptloader.loadSubScript(rootURI + 'content/core.js', scope);
   Zotero.DraftPDFWatch = scope.DraftPDFWatch;
-  await scope.DraftPDFWatch.init(id);
+  await scope.DraftPDFWatch.init(id, version);
 }
 async function shutdown() {
   if (scope) await scope.DraftPDFWatch.shutdown();
