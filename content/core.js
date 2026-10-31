@@ -2,6 +2,8 @@
 var DraftPDFWatch = {
   state: { schema: 1, bindings: [], journal: null },
   listeners: new Set(), menus: [], observations: new Map(), notices: new Map(),
+  dismissedAlerts: new Map(),
+  dismissalPref: 'extensions.draftpdfwatch.dismissedAlerts',
   tail: Promise.resolve(), stopped: false, manager: null,
   serial(fn) {
     const task = this.tail.then(async () => {
@@ -14,6 +16,7 @@ var DraftPDFWatch = {
   },
   async init(pluginID) {
     this.pluginID = pluginID;
+    this.loadBannerDismissals();
     this.statePath = PathUtils.join(Services.dirsvc.get('ProfD', Ci.nsIFile).path, 'draft-pdf-watch.json');
     if (await IOUtils.exists(this.statePath)) {
       this.state = await IOUtils.readJSON(this.statePath);
@@ -45,20 +48,67 @@ var DraftPDFWatch = {
   },
   async persist() { await IOUtils.writeJSON(this.statePath, this.state, { tmpPath: this.statePath + '.tmp' }); },
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
+  loadBannerDismissals() {
+    try {
+      const entries = JSON.parse(Zotero.Prefs.get(this.dismissalPref, true) || '[]');
+      this.dismissedAlerts = new Map(Array.isArray(entries) ? entries.filter(e => Array.isArray(e) && e.length === 2 && e.every(v => typeof v === 'string')) : []);
+    } catch(e) { Zotero.logError(e); this.dismissedAlerts = new Map(); }
+  },
+  saveBannerDismissals() {
+    // Preferences are independent of attachment transactions: a failed recovery
+    // must never prevent dismissing a notification.
+    try { Zotero.Prefs.set(this.dismissalPref, JSON.stringify([...this.dismissedAlerts]), true); }
+    catch(e) { Zotero.logError(e); }
+  },
+  bannerAlerts() {
+    return this.state.bindings.filter(b => b.enabled && (b.error || b.pending)).map(b => ({
+      id: b.id,
+      kind: b.error ? 'error' : 'pending',
+      token: JSON.stringify(b.error ? ['error', b.errorCode || '', b.error] : ['pending', b.pending.path, b.pending.hash])
+    }));
+  },
+  dismissBanner() {
+    for (const alert of this.bannerAlerts()) this.dismissedAlerts.set(alert.id, alert.token);
+    this.saveBannerDismissals();
+    this.emit();
+  },
   emit() {
-    const pending = this.state.bindings.filter(b => b.enabled && b.pending).length;
-    const errors = this.state.bindings.filter(b => b.enabled && b.error).length;
+    let changed = false;
+    for (const id of this.dismissedAlerts.keys()) {
+      const b = this.state.bindings.find(b => b.id === id);
+      // On restart an unchanged PDF first goes through the stability check.
+      // Keep its dismissal until the check finishes, rather than flashing again.
+      if (!b || !b.enabled || (!b.error && !b.pending && b.status !== 'stabilizing')) {
+        this.dismissedAlerts.delete(id); changed = true;
+      }
+    }
+    if (changed) this.saveBannerDismissals();
+    const alerts = this.bannerAlerts().filter(a => this.dismissedAlerts.get(a.id) !== a.token);
+    const pending = alerts.filter(a => a.kind === 'pending').length;
+    const errors = alerts.filter(a => a.kind === 'error').length;
     for (const win of Zotero.getMainWindows()) {
       const doc = win.document;
       let banner = doc.getElementById('draftwatch-banner');
       if (!pending && !errors) { banner?.remove(); continue; }
       if (!banner) {
-        banner = doc.createXULElement('button'); banner.id = 'draftwatch-banner';
-        banner.style.cssText = 'background:#ffdf78;color:#2e2400;padding:8px;font-weight:bold;';
-        banner.addEventListener('command', () => this.open());
+        banner = doc.createXULElement('hbox'); banner.id = 'draftwatch-banner';
+        banner.setAttribute('align', 'center');
+        banner.style.cssText = 'background:#ffdf78;color:#2e2400;padding:4px 8px;';
+        const open = doc.createXULElement('button'); open.id = 'draftwatch-banner-open';
+        open.setAttribute('flex', '1');
+        open.setAttribute('crop', 'end');
+        open.style.cssText = 'appearance:none;background:transparent;color:inherit;border:0;box-shadow:none;min-width:0;margin:0;padding:6px;text-align:left;font-weight:bold;';
+        open.addEventListener('command', () => this.open());
+        const close = doc.createXULElement('button'); close.id = 'draftwatch-banner-close';
+        close.label = '×';
+        close.setAttribute('aria-label', '关闭此提醒');
+        close.setAttribute('tooltiptext', '关闭此提醒；监控继续，有新情况时再提示');
+        close.style.cssText = 'appearance:none;background:transparent;color:inherit;border:1px solid #b69230;border-radius:4px;min-width:30px;margin:0 0 0 8px;padding:2px 8px;font-size:20px;font-weight:bold;';
+        close.addEventListener('command', event => { event.stopPropagation(); this.dismissBanner(); });
+        banner.append(open, close);
         doc.getElementById('zotero-pane')?.prepend(banner);
       }
-      banner.label = `论文 PDF 版本监控：${pending} 个新版待更新，${errors} 个规则需处理 · 点击查看`;
+      doc.getElementById('draftwatch-banner-open').label = `论文 PDF 版本监控：${pending} 个新版待更新，${errors} 个规则需处理 · 点击查看`;
     }
     for (const fn of this.listeners) { try { fn(); } catch (e) { Zotero.logError(e); } }
   },

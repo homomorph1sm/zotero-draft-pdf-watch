@@ -18,6 +18,8 @@
 
 新 PDF 复制并校验成功后，旧附件及其批注移入 Zotero 回收站；父条目、独立笔记及其他附件保留。来源文件不会被删除。自动模式可按条目开启。
 
+窗口内的黄色通知条右侧有「×」关闭按钮。关闭会记住当前提醒，监控继续运行；同一提醒不会随定时检查或重启重复显示，新的 PDF 或错误会再次提醒。仍可从工具菜单打开监控面板处理待办。
+
 ## 运行范围
 
 - 目标版本：Zotero 10.0.x；此前在 Windows Zotero 10.0.7 的隔离库验证过核心替换流程。
@@ -40,7 +42,7 @@ python build.py
 测试无需 npm 依赖：
 
 ```sh
-node --test tests/rules.test.cjs tests/recovery.test.cjs
+node --test tests/*.test.cjs
 python -m unittest discover -s tests -p 'test_*.py'
 ```
 
