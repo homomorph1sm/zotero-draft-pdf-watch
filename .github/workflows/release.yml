@@ -1,0 +1,33 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.13'
+      - run: node --test tests/rules.test.cjs tests/recovery.test.cjs
+      - run: python -m unittest discover -s tests -p 'test_*.py'
+      - name: Build tagged version
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python build.py --tag "$RELEASE_TAG"
+      - name: Publish release with verified assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" dist/*.xpi dist/updates.json dist/SHA256SUMS.txt --verify-tag --title "Draft PDF Watch $RELEASE_TAG" --generate-notes --latest

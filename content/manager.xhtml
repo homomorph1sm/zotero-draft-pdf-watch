@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>论文 PDF 更新监控</title>
+  <link rel="stylesheet" href="manager.css" />
+  <script src="manager.js" defer="defer"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div><div class="eyebrow">DRAFT PDF WATCH</div><h1>论文 PDF 更新监控</h1></div>
+    <button id="check-all" class="action secondary" type="button">立即检查全部</button>
+  </header>
+  <div id="notice" class="notice" role="status" aria-live="polite" hidden="hidden"></div>
+  <main class="workspace">
+    <aside class="sidebar" aria-label="监控条目">
+      <div class="sidebar-heading"><h2>监控条目</h2><span id="binding-count" class="count">0</span></div>
+      <button id="new-binding" class="action add-button" type="button">＋ 绑定当前选中的条目</button>
+      <p class="sidebar-hint">先在 Zotero 文献列表中选中你的论文，再点上方按钮。</p>
+      <div id="binding-list" class="binding-list"></div>
+      <div class="sidebar-foot">Zotero 运行期间每 15 秒检查。<br />目录规则仅检查当前目录。</div>
+    </aside>
+    <section class="detail" aria-label="监控规则">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-symbol" aria-hidden="true">↻</div>
+        <h2>让一个条目跟上论文的新版本</h2>
+        <p>选择论文条目并绑定 PDF 文件夹。发现新版本后，在这里一键更新附件。</p>
+        <ol><li>在 Zotero 中选中论文条目</li><li>点击「绑定当前选中的条目」</li><li>选择文件夹，设置文件名规则</li></ol>
+      </div>
+      <div id="editor" hidden="hidden">
+        <div class="detail-heading"><div><div id="editor-kicker" class="eyebrow">新建监控</div><h2 id="parent-title"></h2></div><span id="rule-status" class="badge"></span></div>
+        <p id="rule-summary" class="hint status-summary" hidden="hidden"></p>
+        <div id="pending-panel" class="pending-panel" hidden="hidden">
+          <div><strong>发现可更新的 PDF</strong><div id="pending-name" class="file-name"></div></div>
+          <button id="update-now" class="action primary" type="button">更新附件</button>
+        </div>
+        <div id="rule-error" class="inline-error" role="status" hidden="hidden"></div>
+        <form id="rule-form">
+          <fieldset id="form-fields">
+            <div class="field"><div class="attachment-heading"><label for="attachment">要替换的现有 PDF 附件</label><button id="repair-attachment" class="action secondary compact" type="button">刷新附件列表 / 修复绑定</button></div><select id="attachment"></select><p id="attachment-hint" class="hint"></p></div>
+            <div class="two-columns">
+              <div class="field"><label for="mode">监控来源</label><select id="mode"><option value="folder">文件夹中的不同版本</option><option value="file">固定 PDF 文件</option></select></div>
+              <div class="field"><label for="order">新版本选择方式</label><select id="order"><option value="version">文件名自然排序（v2 → v10）</option><option value="mtime">文件修改时间（较新优先）</option></select></div>
+            </div>
+            <div class="field"><label id="path-label" for="path">PDF 所在文件夹</label><div class="path-row"><input id="path" type="text" placeholder="选择文件夹，或粘贴完整路径" autocomplete="off" spellcheck="false" required="required" /><button id="browse" class="action secondary" type="button">浏览…</button></div></div>
+            <div id="pattern-field" class="field"><label for="pattern">文件名匹配规则</label><input id="pattern" type="text" value="*.pdf" placeholder="例如 paper_v*.pdf" autocomplete="off" spellcheck="false" /><p class="hint">* 匹配任意长度字符，? 匹配一个字符。请用论文专属前缀，例如 paper_v*.pdf。</p></div>
+            <p id="order-hint" class="hint rule-hint">按文件名中的数字自然排序；同一论文应使用一致前缀，如 paper_v2.pdf、paper_v10.pdf。</p>
+            <div class="options-box">
+              <label class="check-label"><input id="automatic" type="checkbox" /><span><strong>发现新版本后自动替换</strong><small>关闭时仅通知，点击「更新附件」后替换。</small></span></label>
+              <label class="check-label"><input id="enabled" type="checkbox" checked="checked" /><span>启用此条目的监控</span></label>
+            </div>
+          </fieldset>
+        </form>
+        <div id="preview-panel" class="preview-panel" hidden="hidden"><div class="preview-heading"><h3>匹配预览</h3><span class="hint">首行是当前候选，最多显示 20 个</span></div><div id="preview-list"></div></div>
+        <div class="replacement-note"><strong>更新会保留父条目。</strong>新 PDF 校验通过后，旧附件及其批注会移入 Zotero 回收站；父条目的独立笔记保留。</div>
+      </div>
+    </section>
+  </main>
+  <footer id="action-dock" class="action-dock" hidden="hidden">
+    <div class="form-actions"><button id="save-rule" class="action primary" type="submit" form="rule-form">保存监控规则</button><button id="preview-rule" class="action secondary" type="button">预览匹配文件</button><span id="dirty-label" class="hint" hidden="hidden">有未保存的修改</span><div id="existing-actions" class="existing-actions" hidden="hidden"><button id="toggle-rule" class="action text-button" type="button">暂停监控</button><button id="remove-rule" class="action text-button danger" type="button">移除绑定</button></div></div>
+    <div class="dock-meta"><span id="last-update" class="hint"></span><span id="remove-hint" class="hint" hidden="hidden">移除绑定只停止监控，保留条目、附件和源文件。</span></div>
+  </footer>
+</body>
+</html>

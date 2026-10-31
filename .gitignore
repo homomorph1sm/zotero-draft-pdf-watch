@@ -1,0 +1,9 @@
+dist/
+__pycache__/
+*.pyc
+*.xpi
+*.sqlite*
+*.pdf
+*.log
+draft-pdf-watch.json
+.DS_Store
