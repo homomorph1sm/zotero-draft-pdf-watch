@@ -28,6 +28,7 @@ def build(output, tag=None):
     with zipfile.ZipFile(package, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(paths):
             info = zipfile.ZipInfo(path.relative_to(ROOT).as_posix(), (2020, 1, 1, 0, 0, 0))
+            info.create_system = 3  # Identical ZIP metadata on Windows and Linux.
             info.compress_type = zipfile.ZIP_DEFLATED
             info.external_attr = 0o100644 << 16
             content = path.read_bytes()

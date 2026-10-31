@@ -23,6 +23,7 @@ class ReleaseTests(unittest.TestCase):
                 names = archive.namelist()
                 self.assertIn('bootstrap.js', names)
                 self.assertIn('content/core.js', names)
+                self.assertTrue(all(info.create_system == 3 for info in archive.infolist()))
                 self.assertFalse(any(n.startswith('tests/') or n.endswith('.sqlite') for n in names))
                 manifest = json.loads(archive.read('manifest.json'))
                 self.assertEqual(manifest['version'], entry['version'])
