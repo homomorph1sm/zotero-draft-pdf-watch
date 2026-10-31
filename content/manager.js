@@ -289,10 +289,11 @@
     const args = window.arguments?.[0];
     if (!args?.api) throw new Error("无法连接 PDF 更新监控插件。请从 Zotero 的插件菜单重新打开此窗口。");
     state.api = args.api;
+    $("plugin-version").textContent = state.api.version ? `v${state.api.version}` : "需要重新启动 Zotero";
     $("notice-close").addEventListener("click", () => notice(""));
     $("new-binding").addEventListener("click", () => action(() => startNew()));
     $("check-all").addEventListener("click", () => action(async () => {
-      await state.api.checkAll(); await refresh();
+      await state.api.checkAll({forceHash: true}); await refresh();
       const errors = state.bindings.filter(b => b.enabled && b.error).length;
       notice(errors ? `检查完成，${errors} 条规则仍需处理，原因见条目中的提示。` : "检查完成。正在写入的文件会在稳定后识别，待更新条目会显示在列表中。", !!errors);
     }));

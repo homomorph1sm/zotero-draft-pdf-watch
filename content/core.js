@@ -5,25 +5,37 @@ var DraftPDFWatch = {
   dismissedAlerts: new Map(),
   dismissalPref: 'extensions.draftpdfwatch.dismissedAlerts',
   tail: Promise.resolve(), stopped: false, manager: null,
+  enforceOwnership: false,
+  ownsRuntime() { return !this.enforceOwnership || Zotero.DraftPDFWatch === this; },
+  assertOwnership() { if (!this.ownsRuntime()) throw new Error('旧插件实例已停止写入，避免覆盖新绑定'); },
   serial(fn) {
     const task = this.tail.then(async () => {
-      if (this.stopped) throw new Error('插件已停止');
+      if (this.stopped || !this.ownsRuntime()) throw new Error('此插件实例已停止，请重新打开监控面板');
       if (this.state.journal) await this.recover();
+      if (!this.ownsRuntime()) throw new Error('此插件实例已被新版本接替');
       return fn();
     });
     this.tail = task.catch(e => Zotero.logError(e));
     return task;
   },
-  async init(pluginID, version) {
+  init(pluginID, version) {
+    if (!this.initTask) this.initTask = this.initialize(pluginID, version);
+    return this.initTask;
+  },
+  async initialize(pluginID, version) {
+    if (this.stopped || !this.ownsRuntime()) return;
     this.pluginID = pluginID;
     this.version = version || '';
     this.loadBannerDismissals();
     this.statePath = PathUtils.join(Services.dirsvc.get('ProfD', Ci.nsIFile).path, 'draft-pdf-watch.json');
     if (await IOUtils.exists(this.statePath)) {
+      if (this.stopped || !this.ownsRuntime()) return;
       this.state = await IOUtils.readJSON(this.statePath);
       if (this.state.schema !== 1 || !Array.isArray(this.state.bindings)) throw new Error('论文监控配置格式不受支持');
     }
+    if (this.stopped || !this.ownsRuntime()) return;
     try { await this.recover(); } catch(e) { Zotero.logError(e); const b = this.state.bindings.find(b => b.id === this.state.journal?.bindingID); if (b) b.error = String(e); }
+    if (this.stopped || !this.ownsRuntime()) return;
     for (const target of ['main/menubar/tools', 'main/library/item']) {
       this.menus.push(Zotero.MenuManager.registerMenu({
         menuID: 'draftwatch-' + target.split('/').pop(), pluginID, target,
@@ -34,20 +46,30 @@ var DraftPDFWatch = {
       }));
     }
     this.timer = Cc['@mozilla.org/timer;1'].createInstance(Ci.nsITimer);
-    this.timer.initWithCallback(() => this.checkAll().catch(e => Zotero.logError(e)), 15000, Ci.nsITimer.TYPE_REPEATING_SLACK);
+    this.timer.initWithCallback(() => {
+      if (!this.stopped && this.ownsRuntime()) this.checkAll().catch(e => Zotero.logError(e));
+    }, 15000, Ci.nsITimer.TYPE_REPEATING_SLACK);
     await this.checkAll().catch(e => Zotero.logError(e));
     this.emit();
   },
   async shutdown() {
     this.stopped = true;
     this.timer?.cancel();
+    if (this.initTask) await this.initTask.catch(e => Zotero.logError(e));
+    this.timer?.cancel();
     await this.tail;
     this.manager?.close();
-    for (const id of this.menus) Zotero.MenuManager.unregisterMenu(id);
-    for (const win of Zotero.getMainWindows()) win.document.getElementById('draftwatch-banner')?.remove();
+    if (this.ownsRuntime()) {
+      for (const id of this.menus) Zotero.MenuManager.unregisterMenu(id);
+      for (const win of Zotero.getMainWindows()) win.document.getElementById('draftwatch-banner')?.remove();
+    }
+    this.menus = [];
     this.listeners.clear();
   },
-  async persist() { await IOUtils.writeJSON(this.statePath, this.state, { tmpPath: this.statePath + '.tmp' }); },
+  async persist() {
+    this.assertOwnership();
+    await IOUtils.writeJSON(this.statePath, this.state, { tmpPath: this.statePath + '.tmp' });
+  },
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
   loadBannerDismissals() {
     try {
@@ -56,6 +78,7 @@ var DraftPDFWatch = {
     } catch(e) { Zotero.logError(e); this.dismissedAlerts = new Map(); }
   },
   saveBannerDismissals() {
+    if (!this.ownsRuntime()) return;
     // Preferences are independent of attachment transactions: a failed recovery
     // must never prevent dismissing a notification.
     try { Zotero.Prefs.set(this.dismissalPref, JSON.stringify([...this.dismissedAlerts]), true); }
@@ -69,11 +92,13 @@ var DraftPDFWatch = {
     }));
   },
   dismissBanner() {
+    if (this.stopped || !this.ownsRuntime()) return;
     for (const alert of this.bannerAlerts()) this.dismissedAlerts.set(alert.id, alert.token);
     this.saveBannerDismissals();
     this.emit();
   },
   emit() {
+    if (this.stopped || !this.ownsRuntime()) return;
     let changed = false;
     for (const id of this.dismissedAlerts.keys()) {
       const b = this.state.bindings.find(b => b.id === id);
@@ -91,20 +116,25 @@ var DraftPDFWatch = {
       const doc = win.document;
       let banner = doc.getElementById('draftwatch-banner');
       if (!pending && !errors) { banner?.remove(); continue; }
+      if (banner && (banner.getAttribute('data-draftwatch-ui') !== '2'
+          || !doc.getElementById('draftwatch-banner-open') || !doc.getElementById('draftwatch-banner-close'))) {
+        banner.remove(); banner = null;
+      }
       if (!banner) {
         banner = doc.createXULElement('hbox'); banner.id = 'draftwatch-banner';
+        banner.setAttribute('data-draftwatch-ui', '2');
         banner.setAttribute('align', 'center');
-        banner.style.cssText = 'background:#ffdf78;color:#2e2400;padding:4px 8px;';
+        banner.style.cssText = 'display:flex;align-items:center;min-width:0;flex-shrink:0;background:#ffdf78;color:#2e2400;padding:4px 8px;';
         const open = doc.createXULElement('button'); open.id = 'draftwatch-banner-open';
         open.setAttribute('flex', '1');
         open.setAttribute('crop', 'end');
-        open.style.cssText = 'appearance:none;background:transparent;color:inherit;border:0;box-shadow:none;min-width:0;margin:0;padding:6px;text-align:left;font-weight:bold;';
+        open.style.cssText = 'appearance:none;flex:1 1 0;overflow:hidden;background:transparent;color:inherit;border:0;box-shadow:none;min-width:0;margin:0;padding:6px;text-align:left;font-weight:bold;';
         open.addEventListener('command', () => this.open());
         const close = doc.createXULElement('button'); close.id = 'draftwatch-banner-close';
         close.label = '×';
         close.setAttribute('aria-label', '关闭此提醒');
         close.setAttribute('tooltiptext', '关闭此提醒；监控继续，有新情况时再提示');
-        close.style.cssText = 'appearance:none;background:transparent;color:inherit;border:1px solid #b69230;border-radius:4px;min-width:30px;margin:0 0 0 8px;padding:2px 8px;font-size:20px;font-weight:bold;';
+        close.style.cssText = 'appearance:none;flex:0 0 32px;background:transparent;color:inherit;border:1px solid #b69230;border-radius:4px;width:32px;min-width:32px;max-width:32px;margin:0 0 0 8px;padding:2px;font-size:20px;font-weight:bold;';
         close.addEventListener('command', event => { event.stopPropagation(); this.dismissBanner(); });
         banner.append(open, close);
         doc.getElementById('zotero-pane')?.prepend(banner);
@@ -114,6 +144,7 @@ var DraftPDFWatch = {
     for (const fn of this.listeners) { try { fn(); } catch (e) { Zotero.logError(e); } }
   },
   open(parentID = null) {
+    if (this.stopped || !this.ownsRuntime()) throw new Error('此插件实例已停止，请从工具菜单重新打开面板');
     if (this.manager && !this.manager.closed) { this.manager.close(); }
     this.manager = Zotero.getMainWindow().openDialog('chrome://draftwatch/content/manager.xhtml?v=' + encodeURIComponent(this.version || ''), 'draft-pdf-watch', 'chrome,centerscreen,resizable,width=1060,height=780', { api: this, parentID });
   },
@@ -264,8 +295,9 @@ var DraftPDFWatch = {
     }
     return {parent, old};
   },
-  checkAll() {
-    if (this.scanTask) return this.scanTask;
+  checkAll({forceHash = false} = {}) {
+    if (this.scanTask) return forceHash ? this.scanTask.then(() => this.checkAll({forceHash: true})) : this.scanTask;
+    if (forceHash) for (const seen of this.observations.values()) seen.fp = null;
     const task = this.serial(async () => {
     if (this.state.journal) await this.recover();
     for (const b of this.state.bindings) {
@@ -274,7 +306,7 @@ var DraftPDFWatch = {
         await this.scan(b);
         if (b.automatic && b.pending) await this.replace(b);
       } catch(e) {
-        b.error = String(e.message || e); b.errorCode = e.code || null; b.pending = null; this.notify(b, '监控需要处理：' + b.error);
+        b.error = String(e.message || e); b.errorCode = e.code || null; b.pending = null; this.notify(b, '监控需要处理：' + b.error, JSON.stringify(['error', b.errorCode, b.error]));
         if (this.state.journal) { await this.persist(); this.emit(); throw e; }
       }
     }
@@ -305,11 +337,12 @@ var DraftPDFWatch = {
     }
     if (fp.hash === b.lastHash) { b.pending = null; b.status = 'ready'; b.lastSource = fp; return; }
     b.pending = fp; b.status = 'pending';
-    if (!b.automatic) this.notify(b, '发现新版：' + fp.name + '。点击打开监控面板，一键更新附件。');
+    if (!b.automatic) this.notify(b, '发现新版：' + fp.name + '。点击打开监控面板，一键更新附件。', JSON.stringify(['pending', fp.path, fp.hash]));
   },
-  notify(b, message) {
-    if (this.notices.get(b.id) === message) return;
-    this.notices.set(b.id, message);
+  notify(b, message, token = message) {
+    if (this.stopped || !this.ownsRuntime()) return;
+    if (this.notices.get(b.id) === token) return;
+    this.notices.set(b.id, token);
     try {
       const alerts = Cc['@mozilla.org/alerts-service;1'].getService(Ci.nsIAlertsService);
       alerts.showAlertNotification('', '论文 PDF · ' + b.title.slice(0,65), message, true, b.id, { observe: (_s, topic) => { if (topic === 'alertclickcallback' && !this.stopped) this.open(); } });
@@ -317,6 +350,7 @@ var DraftPDFWatch = {
   },
   update(id) { return this.serial(async () => { const b = this.binding(id); await this.replace(b); this.emit(); }); },
   async replace(b) {
+    this.assertOwnership();
     if (this.state.journal) throw new Error('上次替换尚待恢复，暂不开始另一项替换');
     if (!b.enabled) throw new Error('请先启用此监控规则');
     if (!b.pending) throw new Error('没有已就绪的新版本，请检查并等待文件写入稳定');
@@ -332,19 +366,23 @@ var DraftPDFWatch = {
     await this.persist();
     let fresh;
     try {
+      this.assertOwnership();
       fresh = await Zotero.Attachments.importFromFile({file: fp.path, parentItemID: parent.id, title: marker, contentType: 'application/pdf'});
+      this.assertOwnership();
       this.state.journal.newKey = fresh.key;
       await this.persist();
       const copied = await Zotero.Utilities.Internal.md5Async(await fresh.getFilePathAsync());
       if (copied !== fp.hash) throw new Error('导入副本校验失败，旧附件已保留');
       await Zotero.DB.executeTransaction(async () => {
+        this.assertOwnership();
         fresh.setField('title', fp.name); await fresh.save();
+        this.assertOwnership();
         if (old) await Zotero.Items.trash([old.id]);
       });
       await this.finish(b, fresh, fp);
     } catch(e) {
       // Reconcile committed DB changes before deciding whether to discard the new copy.
-      await this.recover();
+      if (this.ownsRuntime()) await this.recover();
       throw e;
     }
     this.notify(b, '已更新为 ' + fp.name + '；旧附件及其批注已移至回收站。');
@@ -354,6 +392,7 @@ var DraftPDFWatch = {
     }
   },
   async finish(b, fresh, fp) {
+    this.assertOwnership();
     b.attachmentKey = fresh.key; b.lastHash = fp.hash; b.lastSource = fp;
     b.lastUpdated = new Date().toISOString(); b.pending = null; b.error = null; b.errorCode = null; b.status = 'ready';
     const journal = this.state.journal;
@@ -362,6 +401,7 @@ var DraftPDFWatch = {
     this.notices.delete(b.id);
   },
   async recover() {
+    this.assertOwnership();
     const j = this.state.journal;
     if (!j) return;
     const b = this.binding(j.bindingID);
@@ -374,12 +414,15 @@ var DraftPDFWatch = {
     if (fresh && !fresh.deleted && (!j.oldKey || old?.deleted)) {
       const path = await fresh.getFilePathAsync();
       if (path && await Zotero.Utilities.Internal.md5Async(path) === j.source.hash) {
+        this.assertOwnership();
         if (fresh.getField('title') === j.marker) { fresh.setField('title', j.source.name); await fresh.saveTx(); }
         await this.finish(b, fresh, j.source); return;
       }
     }
     // Also restore when the new item itself disappeared after the DB commit.
+    this.assertOwnership();
     if (old?.deleted) { old.deleted = false; await old.saveTx(); }
+    this.assertOwnership();
     if (fresh && !fresh.deleted) await Zotero.Items.trashTx([fresh.id]);
     if (j.previous) Object.assign(b, j.previous);
     else { b.attachmentKey = j.oldKey || null; b.lastHash = null; b.lastSource = null; }

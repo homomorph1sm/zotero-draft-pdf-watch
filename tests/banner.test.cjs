@@ -276,3 +276,20 @@ test('listeners still receive state changes while the banner is dismissed', () =
   h.api.emit();
   assert.equal(updates, 3);
 });
+
+test('a legacy banner and a banner missing its close button are rebuilt with working controls', () => {
+  const h = harness();
+  h.api.state.bindings = [pending()];
+  const legacy = new Element('button');
+  legacy.id = 'draftwatch-banner';
+  h.node('zotero-pane').prepend(legacy);
+  h.api.emit();
+  assert.notEqual(h.banner(), legacy);
+  assert.ok(h.node('draftwatch-banner-close'));
+  h.node('draftwatch-banner-close').remove();
+  h.api.emit();
+  assert.ok(h.node('draftwatch-banner-close'));
+  h.close();
+  assert.equal(h.banner(), null);
+  assert.equal(h.opens, 0);
+});
