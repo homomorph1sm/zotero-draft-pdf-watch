@@ -47,7 +47,7 @@ test('a chosen versioned PDF generates a folder rule without changing a binding 
   const before = JSON.stringify(h.api.state);
   const rule = await h.api.ruleFromFile('/drafts/Manuscript_v1.0.42_2026-10-31.pdf');
   assert.deepEqual(plain(rule), {
-    mode: 'folder', path: '/drafts', pattern: 'Manuscript_v*_????-??-??.pdf', order: 'version'
+    mode: 'folder', path: '/drafts', pattern: 'Manuscript_v*_????-??-??.pdf', order: 'version', series: 'manuscript_v{version}_{date}.pdf'
   });
   assert.equal(JSON.stringify(h.api.state), before);
   assert.equal(h.metrics.contentReads, 0);
@@ -62,6 +62,7 @@ test('generated body rule excludes supplements, conflict copies and other paper 
   ];
   const h = host([...body,
     'Manuscript_supplement_v1.0.99_2026-10-31.pdf',
+    'Manuscript_v1.0.10_Ch6_SecurityAnalysis_2026-10-31.pdf',
     'Manuscript_v1.0.18_2026-10-11_DiskStation_Oct-11-1229-2026_RemoveLocalConflict.pdf',
     'OtherManuscript_v99_2026-10-31.pdf',
     'Manuscript_v2_2026-10-31.pdf.bak',

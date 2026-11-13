@@ -3,7 +3,7 @@
 
 (() => {
   const $ = id => document.getElementById(id);
-  const state = { api: null, bindings: [], id: null, parent: null, busy: false, dirty: false, unsubscribe: null, refreshToken: 0 };
+  const state = { api: null, bindings: [], id: null, parent: null, busy: false, dirty: false, series: null, seriesLabel: null, unsubscribe: null, refreshToken: 0 };
   const text = (tag, className, value) => {
     const el = document.createElementNS("http://www.w3.org/1999/xhtml", tag);
     if (className) el.className = className;
@@ -15,11 +15,17 @@
   const formatTime = value => {
     if (!value) return "";
     const date = new Date(value);
-    return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN", { hour12: false });
+    const pad = (number, width = 2) => String(number).padStart(width, "0");
+    return Number.isNaN(date.getTime()) ? String(value)
+      : `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
   };
+  const fileMetadata = file => [file.mtime ? `修改时间 ${formatTime(file.mtime)}` : "",
+    Number.isFinite(file.size) ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : ""].filter(Boolean).join(" · ");
   const status = binding => {
     if (!binding.enabled) return { label: "已暂停", kind: "paused", description: "此条目的定时检查已暂停，点击下方「恢复监控」继续。" };
     if (binding.error || binding.status === "error") return { label: "需处理", kind: "error", description: "本次检查未完成。你仍可编辑并保存规则；附件绑定失效时，点击「刷新附件列表 / 修复绑定」。" };
+    if (binding.status === "choice") return { label: "待选择系列", kind: "pending", description: "请确认要持续更新的文档系列，例如全文、章节或补充材料。选择前暂停附件替换。" };
+    if (binding.selectionRequired && binding.status === "waiting") return { label: "等待候选恢复", kind: "paused", description: "待选择的文件暂不可用；恢复后仍需确认要跟踪的系列，附件替换保持暂停。" };
     if (binding.pending) return { label: "待更新", kind: "pending", description: binding.automatic ? "已发现新版本，将按自动更新规则处理。" : "已发现新版本，点击「更新附件」完成替换。" };
     const descriptions = {
       stabilizing: {label:"等待稳定",kind:"pending",description:"PDF 可能仍在写入，需连续检查确认稳定后才会更新。"},
@@ -38,12 +44,19 @@
     for (const button of document.querySelectorAll(".action")) button.disabled = state.busy;
     for (const button of document.querySelectorAll(".binding-card")) button.disabled = state.busy;
     $("form-fields").disabled = state.busy || !state.parent;
-    $("update-now").disabled = state.busy || state.dirty || !current()?.pending;
+    $("update-now").disabled = state.busy || state.dirty || current()?.status === "choice" || !current()?.pending;
     $("update-now").title = state.dirty ? "请先保存规则修改，再更新附件" : "导入新 PDF，将所绑定的旧附件及批注移入回收站";
     $("save-rule").disabled = state.busy || !state.parent;
     $("preview-rule").disabled = state.busy || !state.parent;
     $("repair-attachment").disabled = state.busy || !state.parent;
     $("derive-rule").disabled = state.busy || !state.parent;
+    for (const button of document.querySelectorAll(".choose-candidate")) {
+      button.disabled = state.busy || state.dirty || !state.parent || !current()?.enabled;
+      button.title = state.dirty ? "请先保存规则修改，再选择文档系列" : !current()?.enabled ? "请先恢复监控，再选择文档系列" : "记住此文档系列，后续只跟踪该系列的新版本";
+    }
+    $("reset-series").disabled = state.busy || state.dirty || !state.parent;
+    $("reset-series").title = state.dirty ? "请先保存规则修改，再重新选择系列" : "清除系列选择，重新检查匹配的文档系列";
+    $("choice-dirty-hint").hidden = !state.dirty;
     $("save-attachment").hidden = !attachmentChanged();
     $("save-attachment").disabled = state.busy || !state.parent;
     $("action-dock").hidden = $("editor").hidden;
@@ -86,7 +99,10 @@
     const binding = current();
     $("rule-status").hidden = !binding;
     $("rule-summary").hidden = !binding;
-    $("pending-panel").hidden = !binding?.pending;
+    $("pending-panel").hidden = !binding?.pending || binding?.status === "choice";
+    renderCandidates(binding);
+    $("selected-series").hidden = !state.series;
+    $("series-name").textContent = state.seriesLabel || state.series || "";
     $("existing-actions").hidden = !binding;
     $("remove-hint").hidden = !binding;
     $("rule-error").hidden = !binding?.error;
@@ -105,18 +121,47 @@
     }
     controls();
   }
+  function renderCandidates(binding) {
+    const choices = binding?.status === "choice" ? binding.choices || [] : [];
+    $("choice-panel").hidden = binding?.status !== "choice";
+    $("choice-list").replaceChildren();
+    for (const file of choices) {
+      const card = text("div", "candidate-card", "");
+      const details = text("div", "candidate-details", "");
+      if (file.label) details.append(text("div", "candidate-series", file.label));
+      const filename = text("div", "candidate-name", file.name || file.path);
+      filename.title = file.path;
+      details.append(filename, text("div", "candidate-meta", fileMetadata(file)));
+      const button = text("button", "action secondary choose-candidate", "跟踪此系列");
+      button.type = "button";
+      button.setAttribute("aria-label", `跟踪此系列：${file.name || file.path}`);
+      button.addEventListener("click", () => action(async () => {
+        if (!state.id || state.dirty) return;
+        const id = state.id;
+        await state.api.chooseCandidate(id, file.path);
+        await refresh(); await editBinding(id);
+        if (current()?.error) { notice("系列已保存，本次检查仍需处理：" + current().error, true); return; }
+        notice(current()?.automatic
+          ? "已记住所选系列。后续检查确认文件稳定且内容变化后，将按自动更新设置替换附件。"
+          : "已记住所选系列。后续检查确认文件稳定且内容变化后，会提示你点击「更新附件」。", false, "pending");
+      }));
+      card.append(details, button);
+      $("choice-list").append(card);
+    }
+  }
   async function refresh() {
     const token = ++state.refreshToken;
     const bindings = await state.api.listBindings();
     if (token !== state.refreshToken || window.closed) return;
     const previousAttachmentKey = current()?.attachmentKey;
+    const previousSeries = current()?.series;
     state.bindings = bindings;
     renderList();
     renderState();
     // Automatic replacement may swap the attachment while this window stays open.
     // Keep an untouched form current, while preserving deliberate user edits.
     if (state.id && !state.dirty && current()
-        && previousAttachmentKey !== current().attachmentKey) {
+        && (previousAttachmentKey !== current().attachmentKey || previousSeries !== current().series)) {
       await editBinding(state.id);
     }
   }
@@ -207,6 +252,8 @@
     state.parent = parent;
     state.id = binding?.id || null;
     state.dirty = false;
+    state.series = binding?.series || null;
+    state.seriesLabel = binding?.seriesLabel || null;
     $("empty-state").hidden = true;
     $("editor").hidden = false;
     $("parent-title").textContent = parent.title || binding?.title || "未命名条目";
@@ -249,6 +296,12 @@
     $("preview-panel").hidden = true;
     renderState();
   }
+  function sourceEdited(event) {
+    if (["mode", "path", "pattern"].includes(event.target.id)) {
+      state.series = null; state.seriesLabel = null;
+    }
+    markDirty();
+  }
   function config(requireAttachment = true) {
     if (!state.parent) throw new Error("请先在 Zotero 中选择要绑定的论文条目。");
     const path = $("path").value.trim();
@@ -261,6 +314,7 @@
     return {
       ...(state.id ? { id: state.id } : {}), parentID: state.parent.parentID,
       attachmentKey, mode: $("mode").value, path, pattern, order: $("order").value,
+      series: state.series,
       automatic: $("automatic").checked, enabled: $("enabled").checked,
     };
   }
@@ -275,12 +329,11 @@
   function showPreview(files) {
     $("preview-list").replaceChildren();
     if (!files.length) $("preview-list").append(text("p", "preview-empty", "没有匹配的 PDF。请检查路径和文件名规则。"));
-    for (const [index, file] of files.slice(0, 20).entries()) {
+    for (const file of files.slice(0, 20)) {
       const row = text("div", "preview-row", "");
       row.title = file.path || "";
-      row.append(text("div", "preview-name", `${index === 0 ? "当前候选 · " : ""}${file.name || file.path}`));
-      const size = Number.isFinite(file.size) ? `${(file.size / 1024 / 1024).toFixed(2)} MB` : "";
-      row.append(text("div", "preview-meta", [formatTime(file.mtime), size].filter(Boolean).join(" · ")));
+      row.append(text("div", "preview-name", file.name || file.path));
+      row.append(text("div", "preview-meta", fileMetadata(file)));
       $("preview-list").append(row);
     }
     $("preview-panel").hidden = false;
@@ -299,7 +352,7 @@
     }));
     $("browse").addEventListener("click", () => action(async () => {
       const path = await state.api.pickPath($("mode").value, window);
-      if (path) { $("path").value = path; markDirty(); }
+      if (path) { $("path").value = path; state.series = null; state.seriesLabel = null; markDirty(); }
     }));
     $("repair-attachment").addEventListener("click", () => action(() => repairAttachment()));
     $("derive-rule").addEventListener("click", () => action(async () => {
@@ -307,14 +360,25 @@
       if (!file) return;
       const rule = await state.api.ruleFromFile(file);
       for (const key of ["mode", "path", "pattern", "order"]) $(key).value = rule[key];
+      state.series = rule.series || null;
+      state.seriesLabel = rule.seriesLabel || null;
       setSourceMode(); markDirty();
       showPreview(await state.api.preview(config(false)));
       notice("已从所选 PDF 生成同系列版本规则。请核对下方候选文件，再保存监控规则。", false, "pending");
     }));
     $("mode").addEventListener("change", setSourceMode);
     $("order").addEventListener("change", setSourceMode);
-    $("rule-form").addEventListener("input", markDirty);
-    $("rule-form").addEventListener("change", markDirty);
+    $("rule-form").addEventListener("input", sourceEdited);
+    $("rule-form").addEventListener("change", sourceEdited);
+    $("reset-series").addEventListener("click", () => action(async () => {
+      if (state.dirty) return;
+      if (!state.id) { state.series = null; state.seriesLabel = null; markDirty(); return; }
+      const id = state.id;
+      await state.api.chooseCandidate(id, null);
+      await refresh(); await editBinding(id);
+      if (current()?.error) notice("已清除系列选择，本次检查仍需处理：" + current().error, true);
+      else notice(current()?.status === "choice" ? "已清除系列选择，请从候选列表重新选择要跟踪的系列。" : "已清除系列选择；后续检查将按当前规则识别文档系列。", false, "pending");
+    }));
     $("rule-form").addEventListener("submit", event => {
       event.preventDefault();
       action(async () => {

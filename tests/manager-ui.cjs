@@ -26,7 +26,7 @@ const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
       const clone = value => JSON.parse(JSON.stringify(value));
       const state = window.testState = {
         saved: [], attempts: [], callbacks: [], attachmentWrites: 0, checks: 0,
-        saveError: null, pickedPath: null, previewed: [],
+        saveError: null, pickedPath: null, previewed: [], previewFiles: [], choices: [], chosenPaths: [],
         parent: {
           parentID: 23,
           title: 'A long manuscript title for testing attachment repair and notification layout in a small window',
@@ -45,12 +45,25 @@ const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
         listBindings: async () => clone(state.bindings),
         getParent: async () => clone(state.parent),
         selection: async () => clone(state.parent),
-        preview: async config => { state.previewed.push(clone(config)); return []; },
+        preview: async config => { state.previewed.push(clone(config)); return clone(state.previewFiles); },
         checkAll: async () => { state.checks++; },
         pickPath: async () => state.pickedPath,
         ruleFromFile: async file => {
           if (file !== 'C:\\New drafts\\paper_v12.pdf') throw new Error('Unexpected fixture path');
-          return { mode: 'folder', path: 'C:\\New drafts', pattern: 'paper_v*.pdf', order: 'version' };
+          return { mode: 'folder', path: 'C:\\New drafts', pattern: 'paper_v*.pdf', order: 'version', series: 'paper_v{version}.pdf' };
+        },
+        chooseCandidate: async (id, path) => {
+          state.chosenPaths.push(path);
+          const binding = state.bindings.find(item => item.id === id);
+          const file = state.choices.find(item => item.path === path);
+          if (path && !file) throw new Error('候选文件已改变，请重新检查');
+          Object.assign(binding, {
+            series: file?.series || null, seriesLabel: file?.label || null,
+            status: path ? 'stabilizing' : 'choice', pending: null,
+            choices: path ? [] : clone(state.choices),
+          });
+          state.emit();
+          return clone(binding);
         },
         saveBinding: async config => {
           state.attempts.push(clone(config));
@@ -89,6 +102,23 @@ const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
   // Playwright's inputValue() assumes HTML node-name casing; this page is XHTML.
   const value = (page, id) => page.locator(id).evaluate(element => element.value);
   const message = page => page.locator('#notice-message').textContent();
+  async function multipleSeries(page, automatic = false) {
+    await page.evaluate(automatic => {
+      testState.choices = [
+        { name: 'Manuscript_v2.0.31_2026-11-13.pdf', series: 'manuscript_v{version}_{date}.pdf', label: 'Manuscript_v…_日期.pdf', size: 1060000, mtime: new Date('2026-11-13T09:44:33.001').getTime() },
+        { name: 'Manuscript_v2.0.31_Ch6_SecurityAnalysis_2026-11-13.pdf', series: 'manuscript_v{version}_ch6_securityanalysis_{date}.pdf', label: 'Manuscript_v…_Ch6_SecurityAnalysis_日期.pdf', size: 304000, mtime: new Date('2026-11-13T09:44:34.999').getTime() },
+        { name: 'Manuscript_supplement_v2.0.31_2026-11-13.pdf', series: 'manuscript_supplement_v{version}_{date}.pdf', label: 'Manuscript_supplement_v…_日期.pdf', size: 100000, mtime: new Date('2026-11-13T09:44:34.900').getTime() },
+      ].map(file => ({ ...file, path: 'C:\\Drafts\\' + file.name }));
+      Object.assign(testState.bindings[0], {
+        attachmentKey: 'CURRENT1', error: null, errorCode: null, pattern: '*.pdf',
+        status: 'choice', choices: testState.choices, pending: null, series: null, automatic,
+      });
+      testState.previewFiles = testState.choices;
+      testState.emit();
+    }, automatic);
+    await page.waitForFunction(() => document.querySelectorAll('.choose-candidate').length === 3
+      && document.getElementById('attachment').value === 'CURRENT1');
+  }
   async function click(page, id) {
     await page.locator(id).click();
     await page.waitForFunction(() => !document.getElementById('check-all').disabled);
@@ -119,6 +149,102 @@ const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
   }
 
   try {
+    await run('different series show all filenames, sizes, and millisecond timestamps without choosing a winner', async page => {
+      await multipleSeries(page);
+      assert.equal(await page.locator('.candidate-card').count(), 3);
+      assert.equal(await page.locator('#pending-panel').isVisible(), false);
+      assert.match(await page.locator('#rule-status').textContent(), /待选择系列/);
+      const names = await page.locator('.candidate-name').allTextContents();
+      assert.ok(names.includes('Manuscript_v2.0.31_2026-11-13.pdf'));
+      assert.ok(names.includes('Manuscript_v2.0.31_Ch6_SecurityAnalysis_2026-11-13.pdf'));
+      assert.match(await page.locator('.candidate-meta').nth(0).textContent(), /09:44:33\.001.*1\.01 MB/);
+      assert.match(await page.locator('.candidate-meta').nth(1).textContent(), /09:44:34\.999.*0\.29 MB/);
+      assert.equal(await page.evaluate(() => testState.chosenPaths.length), 0);
+      await click(page, '#preview-rule');
+      assert.equal(await page.locator('.preview-row').count(), 3);
+      assert.doesNotMatch(await page.locator('#preview-panel').textContent(), /当前候选|首行是/);
+    });
+
+    await run('choosing and reselecting a series persists intent without replacing an attachment', async page => {
+      await multipleSeries(page);
+      await click(page, '.choose-candidate >> nth=0');
+      assert.equal(await page.locator('#choice-panel').isVisible(), false);
+      assert.equal(await page.locator('#selected-series').isVisible(), true);
+      assert.equal(await page.evaluate(() => testState.bindings[0].series), 'manuscript_v{version}_{date}.pdf');
+      assert.match(await page.locator('#series-name').textContent(), /Manuscript_v/);
+      assert.match(await message(page), /记住.*后续检查.*提示/);
+      assert.equal(await page.evaluate(() => testState.checks), 0, 'choice itself does not trigger an automatic replacement scan');
+      await click(page, '#notice-close');
+      await page.evaluate(() => testState.emit());
+      assert.equal(await page.locator('#notice').isVisible(), false);
+      assert.equal(await page.locator('#selected-series').isVisible(), true);
+      await click(page, '#reset-series');
+      assert.equal(await page.locator('#choice-panel').isVisible(), true);
+      assert.equal(await page.locator('.candidate-card').count(), 3);
+      await click(page, '.choose-candidate >> nth=1');
+      assert.match(await page.evaluate(() => testState.bindings[0].series), /ch6_securityanalysis/);
+      assert.equal(await page.evaluate(() => testState.chosenPaths.length), 3);
+    });
+
+    await run('automatic rules explain the next scan and do not update during selection', async page => {
+      await multipleSeries(page, true);
+      await click(page, '.choose-candidate >> nth=0');
+      assert.match(await message(page), /后续检查.*自动更新设置/);
+      assert.equal(await page.evaluate(() => testState.checks), 0);
+    });
+
+    await run('a previously ambiguous source still requests confirmation when candidates disappear', async page => {
+      await multipleSeries(page);
+      await page.evaluate(() => {
+        testState.bindings[0].selectionRequired = true;
+        testState.bindings[0].choices = testState.choices.slice(0, 1);
+        testState.emit();
+      });
+      await page.waitForFunction(() => document.querySelectorAll('.choose-candidate').length === 1);
+      assert.match(await page.locator('#rule-summary').textContent(), /请确认/);
+      await page.evaluate(() => {
+        Object.assign(testState.bindings[0], { status: 'waiting', choices: [] });
+        testState.emit();
+      });
+      await page.waitForFunction(() => document.getElementById('rule-status').textContent === '等待候选恢复');
+      assert.match(await page.locator('#rule-summary').textContent(), /仍需确认.*暂停/);
+      assert.equal(await page.locator('#pending-panel').isVisible(), false);
+      assert.equal(await page.evaluate(() => testState.chosenPaths.length), 0);
+    });
+
+    await run('unsaved fields block candidate choice and survive background refresh', async page => {
+      await multipleSeries(page);
+      await edit(page, '#path', 'C:\\Edited drafts');
+      assert.equal(await page.locator('.choose-candidate').nth(0).isDisabled(), true);
+      await page.locator('.choose-candidate').nth(0).evaluate(button => button.click());
+      await page.evaluate(() => testState.emit());
+      assert.equal(await value(page, '#path'), 'C:\\Edited drafts');
+      assert.equal(await page.evaluate(() => testState.chosenPaths.length), 0);
+      assert.equal(await page.locator('#choice-dirty-hint').isVisible(), true);
+    });
+
+    for (const [field, replacement] of [['path', 'C:\\Edited drafts'], ['pattern', 'other_v*.pdf'], ['mode', 'file']]) {
+      await run(`editing source ${field} clears the saved series constraint on save`, async page => {
+        await multipleSeries(page);
+        await click(page, '.choose-candidate >> nth=0');
+        await edit(page, '#' + field, replacement, 'change');
+        assert.equal(await page.locator('#selected-series').isVisible(), false);
+        await click(page, '#save-rule');
+        assert.equal(await page.evaluate(() => testState.saved.at(-1).series), null);
+      });
+    }
+
+    await run('editing sort order preserves series and dirty form blocks reselecting it', async page => {
+      await multipleSeries(page);
+      await click(page, '.choose-candidate >> nth=0');
+      await edit(page, '#order', 'mtime', 'change');
+      assert.equal(await page.locator('#reset-series').isDisabled(), true);
+      await page.locator('#reset-series').evaluate(button => button.click());
+      assert.equal(await page.evaluate(() => testState.chosenPaths.length), 1);
+      await click(page, '#save-rule');
+      assert.equal(await page.evaluate(() => testState.saved.at(-1).series), 'manuscript_v{version}_{date}.pdf');
+    });
+
     await run('manager notice closes without submitting, discarding edits, or pausing monitoring', async page => {
       await edit(page, '#path', 'C:\\Changed drafts');
       await edit(page, '#pattern', 'revision*.pdf');
@@ -238,8 +364,9 @@ const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
       assert.equal(await page.evaluate(() => testState.saved.length), 0);
       assert.deepEqual(await page.evaluate(() => {
         const preview = testState.previewed.at(-1);
-        return { path: preview.path, pattern: preview.pattern, attachmentKey: preview.attachmentKey };
-      }), { path: 'C:\\New drafts', pattern: 'paper_v*.pdf', attachmentKey: 'CURRENT1' });
+        return { path: preview.path, pattern: preview.pattern, attachmentKey: preview.attachmentKey, series: preview.series };
+      }), { path: 'C:\\New drafts', pattern: 'paper_v*.pdf', attachmentKey: 'CURRENT1', series: 'paper_v{version}.pdf' });
+      assert.equal(await page.locator('#selected-series').isVisible(), true);
       assert.match(await message(page), /保存/);
       await click(page, '#notice-close');
       assert.equal(await page.locator('#notice').isVisible(), false);
@@ -248,6 +375,8 @@ const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
       await click(page, '#derive-rule');
       assert.equal(await value(page, '#path'), 'C:\\New drafts', 'cancelling file selection preserves existing edits');
       assert.equal(await page.evaluate(() => testState.previewed.length), 1);
+      await click(page, '#save-rule');
+      assert.equal(await page.evaluate(() => testState.saved.at(-1).series), 'paper_v{version}.pdf', 'saving a generated rule retains its exact series constraint');
     });
 
     for (const viewport of [{ width: 850, height: 540 }, { width: 1024, height: 630 }]) {

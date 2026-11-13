@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Draft PDF Watch · 论文版本监控",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "为固定 Zotero 条目监控本地论文 PDF 版本，提示或自动替换附件。",
   "author": "Draft PDF Watch contributors",
   "applications": {"zotero": {"id": "draft-pdf-watch@local", "update_url": "https://github.com/homomorph1sm/zotero-draft-pdf-watch/releases/latest/download/updates.json", "strict_min_version": "10.0", "strict_max_version": "10.0.*"}}

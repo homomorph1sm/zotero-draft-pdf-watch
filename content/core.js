@@ -85,10 +85,11 @@ var DraftPDFWatch = {
     catch(e) { Zotero.logError(e); }
   },
   bannerAlerts() {
-    return this.state.bindings.filter(b => b.enabled && (b.error || b.pending)).map(b => ({
+    return this.state.bindings.filter(b => b.enabled && (b.error || b.pending || b.status === 'choice')).map(b => ({
       id: b.id,
-      kind: b.error ? 'error' : 'pending',
-      token: JSON.stringify(b.error ? ['error', b.errorCode || '', b.error] : ['pending', b.pending.path, b.pending.hash])
+      kind: b.error ? 'error' : b.status === 'choice' ? 'choice' : 'pending',
+      token: JSON.stringify(b.error ? ['error', b.errorCode || '', b.error] : b.status === 'choice'
+        ? ['choice', (b.choices || []).map(f => [f.series, f.path, f.size, f.mtime])] : ['pending', b.pending.path, b.pending.hash])
     }));
   },
   dismissBanner() {
@@ -104,7 +105,7 @@ var DraftPDFWatch = {
       const b = this.state.bindings.find(b => b.id === id);
       // On restart an unchanged PDF first goes through the stability check.
       // Keep its dismissal until the check finishes, rather than flashing again.
-      if (!b || !b.enabled || (!b.error && !b.pending && b.status !== 'stabilizing')) {
+      if (!b || !b.enabled || (!b.error && !b.pending && b.status !== 'stabilizing' && b.status !== 'choice')) {
         this.dismissedAlerts.delete(id); changed = true;
       }
     }
@@ -112,10 +113,11 @@ var DraftPDFWatch = {
     const alerts = this.bannerAlerts().filter(a => this.dismissedAlerts.get(a.id) !== a.token);
     const pending = alerts.filter(a => a.kind === 'pending').length;
     const errors = alerts.filter(a => a.kind === 'error').length;
+    const choices = alerts.filter(a => a.kind === 'choice').length;
     for (const win of Zotero.getMainWindows()) {
       const doc = win.document;
       let banner = doc.getElementById('draftwatch-banner');
-      if (!pending && !errors) { banner?.remove(); continue; }
+      if (!pending && !errors && !choices) { banner?.remove(); continue; }
       if (banner && (banner.getAttribute('data-draftwatch-ui') !== '2'
           || !doc.getElementById('draftwatch-banner-open') || !doc.getElementById('draftwatch-banner-close'))) {
         banner.remove(); banner = null;
@@ -139,7 +141,7 @@ var DraftPDFWatch = {
         banner.append(open, close);
         doc.getElementById('zotero-pane')?.prepend(banner);
       }
-      doc.getElementById('draftwatch-banner-open').label = `论文 PDF 版本监控：${pending} 个新版待更新，${errors} 个规则需处理 · 点击查看`;
+      doc.getElementById('draftwatch-banner-open').label = `论文 PDF 版本监控：${pending} 个新版待更新，${errors} 个规则需处理${choices ? `，${choices} 个规则需选择文档` : ''} · 点击查看`;
     }
     for (const fn of this.listeners) { try { fn(); } catch (e) { Zotero.logError(e); } }
   },
@@ -177,13 +179,27 @@ var DraftPDFWatch = {
     catch (_error) { throw new Error('无法读取所选文件的信息，请确认文件存在且可以访问。'); }
     const name = PathUtils.filename(filePath);
     if (file.type !== 'regular' || !/\.pdf$/i.test(name)) throw new Error('请选择一个已存在的 PDF 文件。');
-    const match = /^(.*)_v(\d+(?:\.\d+)*)_(\d{4}-\d{2}-\d{2})\.pdf$/.exec(name);
+    const match = /^(.*)_v(\d+(?:\.\d+)*)(_[^*?]+?)?_(\d{4}-\d{2}-\d{2})\.pdf$/i.exec(name);
     if (!match || !match[1].trim() || /[*?]/.test(match[1])) {
       throw new Error('无法自动识别此文件的版本命名。请使用“论文前缀_v1.0.2_2026-10-31.pdf”格式，或手动填写文件夹与匹配规则。');
     }
-    const pattern = match[1] + '_v*_????-??-??.pdf';
+    const pattern = match[1] + '_v*' + (match[3] || '') + '_????-??-??.pdf';
     if (pattern.length > 200) throw new Error('文件名前缀过长，无法自动生成匹配规则，请手动填写。');
-    return {mode: 'folder', path: PathUtils.parent(filePath), pattern, order: 'version'};
+    return {mode: 'folder', path: PathUtils.parent(filePath), pattern, order: 'version', series: this.seriesInfo(name).key};
+  },
+  seriesInfo(name) {
+    // Only explicit version/date tokens vary. Chapter numbers and descriptive
+    // suffixes remain part of the identity; unknown naming is kept separate.
+    const stem = String(name).replace(/\.pdf$/i, '');
+    const version = /^(.*?)(v)(\d+(?:\.\d+)*)(?=$|[_ -])(.*)$/i.exec(stem);
+    const dated = value => value.replace(/(^|[_ -])\d{4}-\d{2}-\d{2}(?=$|[_ -])/g, '$1{date}');
+    let template;
+    if (version && (!version[1] || /[_ .-]$/.test(version[1]))) {
+      template = dated(version[1]) + 'v{version}' + dated(version[4]);
+    } else {
+      template = dated(stem);
+    }
+    return {key: template.toLowerCase() + '.pdf', label: template.replace('{version}', '…').replace(/\{date\}/g, '日期') + '.pdf'};
   },
   glob(pattern) {
     if (!pattern || pattern.length > 200 || /[\\/]/.test(pattern)) throw new Error('匹配规则只填写文件名，例如 paper_v*.pdf');
@@ -201,6 +217,7 @@ var DraftPDFWatch = {
   validateSource(config) {
     if (!['file', 'folder'].includes(config.mode) || !['version', 'mtime'].includes(config.order)) throw new Error('无效的监控类型或排序');
     if (!config.path || !PathUtils.isAbsolute(config.path)) throw new Error('请选择完整的绝对路径');
+    if (config.series != null && (typeof config.series !== 'string' || !config.series || config.series.length > 1024)) throw new Error('文档系列无效，请重新选择');
     return this.glob(config.pattern || '*.pdf');
   },
   async candidates(config) {
@@ -210,8 +227,10 @@ var DraftPDFWatch = {
     for (const path of paths) {
       const name = PathUtils.filename(path);
       if (!/\.pdf$/i.test(name) || (config.mode === 'folder' && !match.test(name))) continue;
+      const info = this.seriesInfo(name);
+      if (config.mode === 'folder' && config.series && config.series !== info.key) continue;
       const st = await IOUtils.stat(path);
-      if (st.type === 'regular') files.push({path, name, size: st.size, mtime: st.lastModified});
+      if (st.type === 'regular') files.push({path, name, size: st.size, mtime: st.lastModified, series: info.key, label: info.label});
     }
     files.sort((a,b) => config.order === 'version'
       ? this.compareNames(b.name, a.name) || b.mtime - a.mtime || b.path.localeCompare(a.path)
@@ -219,6 +238,50 @@ var DraftPDFWatch = {
     return files;
   },
   async preview(config) { return (await this.candidates(config)).slice(0,20); },
+  async candidateSelection(config) {
+    const files = await this.candidates(config);
+    const bySeries = new Map();
+    for (const file of files) {
+      const series = file.series || this.seriesInfo(file.name).key;
+      if (!bySeries.has(series)) bySeries.set(series, {...file, series, label: file.label || this.seriesInfo(file.name).label});
+    }
+    const choices = [...bySeries.values()];
+    const needsChoice = config.mode === 'folder' && !config.series
+      && (choices.length > 1 || ((config.selectionRequired || config.status === 'choice') && choices.length > 0));
+    return {candidate: needsChoice ? null : files[0], choices: needsChoice ? choices : []};
+  },
+  markChoice(b, choices, {notify = true} = {}) {
+    b.selectionRequired = true;
+    b.choices = choices; b.pending = null; b.error = null; b.errorCode = null; b.status = 'choice';
+    this.observations.delete(b.id);
+    if (notify) this.notify(b, `有 ${choices.length} 个文档系列可供选择，请打开监控面板确认要持续更新的文档。`,
+      JSON.stringify(['choice', choices.map(f => [f.series, f.path, f.size, f.mtime])]));
+  },
+  chooseCandidate(id, path) { return this.serial(async () => {
+    const b = this.binding(id);
+    if (b.mode !== 'folder') throw new Error('仅文件夹监控需要选择文档系列');
+    const files = path == null ? [] : await this.candidates({...b, series: null});
+    const chosen = path == null ? null : files.find(f => f.path === path);
+    if (path != null && !chosen) throw new Error('所选候选已不在匹配目录中，请重新检查');
+    if (chosen && files.find(f => f.series === chosen.series)?.path !== path) throw new Error('此系列已有更新的候选，请重新检查后选择');
+    const updated = {...b, series: chosen?.series || null, selectionRequired: !chosen, choices: [], pending: null,
+      lastSource: null, error: null, errorCode: null, status: 'waiting'};
+    const before = this.state.bindings;
+    const observation = this.observations.get(id);
+    this.observations.delete(id);
+    // Inspect this rule only: never let a selection trigger automatic writes
+    // in this or another rule. The first stability sample is retained.
+    try { await this.scan(updated, {notify: false}); }
+    catch(e) { updated.error = String(e.message || e); updated.errorCode = e.code || null; updated.pending = null; }
+    this.state.bindings = before.map(item => item.id === id ? updated : item);
+    try { await this.persist(); } catch(e) {
+      this.state.bindings = before;
+      if (observation) this.observations.set(id, observation); else this.observations.delete(id);
+      throw e;
+    }
+    this.notices.delete(id); this.emit();
+    return updated;
+  }); },
   async fingerprint(file) {
     const before = await IOUtils.stat(file.path);
     if (before.size < 20 || before.size > 268435456) throw new Error('PDF 为空、尚未写完或超过 256 MB');
@@ -232,7 +295,8 @@ var DraftPDFWatch = {
     return {...file, size: after.size, mtime: after.lastModified, hash};
   },
   async listBindings() {
-    return this.state.bindings.map(b => ({...b, status: !b.enabled ? 'paused' : b.error ? 'error' : b.pending ? 'pending' : b.status || 'ready'}));
+    return this.state.bindings.map(b => ({...b, seriesLabel: b.series ? b.series.replace('{version}', '…').replace(/\{date\}/g, '日期') : null,
+      status: !b.enabled ? 'paused' : b.error ? 'error' : b.pending ? 'pending' : b.status || 'ready'}));
   },
   saveBinding(config) { return this.serial(async () => {
     config = {...config, path: String(config.path || '').trim()};
@@ -252,11 +316,14 @@ var DraftPDFWatch = {
     try { await this.candidates(config); } catch(e) { sourceError = String(e.message || e); }
     const binding = { id: current?.id || Zotero.Utilities.randomString(12), parentID: info.parentID, parentKey: info.parentKey, libraryID: info.libraryID,
       title: info.title, attachmentKey: config.attachmentKey || null, mode: config.mode, path: config.path.trim(), pattern: config.pattern || '*.pdf', order: config.order,
+      series: config.mode === 'folder' ? config.series || null : null, choices: [],
+      selectionRequired: config.mode === 'folder' && !config.series && !!(current?.selectionRequired || current?.status === 'choice'),
       automatic: !!config.automatic, enabled: config.enabled !== false, lastHash: current?.lastHash || null, lastSource: current?.lastSource || null,
       lastUpdated: current?.lastUpdated || null, status: 'waiting', pending: null,
       error: invalidKey ? '原附件绑定已失效；请点击「刷新附件列表 / 修复绑定」，选择当前 PDF 后保存。目录与其他规则仍可修改。' : sourceError,
       errorCode: invalidKey ? 'attachment-invalid' : sourceError ? 'source-unavailable' : null };
-    if (current && ['mode', 'path', 'pattern', 'order'].some(k => current[k] !== binding[k])) binding.lastSource = null;
+    if (current && ['mode', 'path', 'pattern', 'order', 'series'].some(k => current[k] !== binding[k])) binding.lastSource = null;
+    if (current && ['mode', 'path', 'pattern'].some(k => current[k] !== binding[k])) binding.selectionRequired = false;
     if (!invalidKey && (current?.attachmentKey !== binding.attachmentKey || !binding.lastHash)) {
       const att = binding.attachmentKey && await Zotero.Items.getByLibraryAndKeyAsync(binding.libraryID, binding.attachmentKey);
       const path = att && await att.getFilePathAsync();
@@ -316,10 +383,13 @@ var DraftPDFWatch = {
     task.finally(() => { this.scanTask = null; }).catch(() => {});
     return task;
   },
-  async scan(b) {
+  async scan(b, {notify = true} = {}) {
     await this.validateTarget(b);
-    const candidate = (await this.candidates(b))[0];
+    const selection = await this.candidateSelection(b);
     b.error = null; b.errorCode = null;
+    if (selection.choices.length) { this.markChoice(b, selection.choices, {notify}); return; }
+    b.choices = [];
+    const candidate = selection.candidate;
     if (!candidate) { b.pending = null; b.status = 'waiting'; this.observations.delete(b.id); return; }
     // Never silently downgrade when the newest source disappears.
     if (b.mode === 'folder' && b.lastSource && candidate.path !== b.lastSource.path) {
@@ -337,7 +407,7 @@ var DraftPDFWatch = {
     }
     if (fp.hash === b.lastHash) { b.pending = null; b.status = 'ready'; b.lastSource = fp; return; }
     b.pending = fp; b.status = 'pending';
-    if (!b.automatic) this.notify(b, '发现新版：' + fp.name + '。点击打开监控面板，一键更新附件。', JSON.stringify(['pending', fp.path, fp.hash]));
+    if (notify && !b.automatic) this.notify(b, '发现新版：' + fp.name + '。点击打开监控面板，一键更新附件。', JSON.stringify(['pending', fp.path, fp.hash]));
   },
   notify(b, message, token = message) {
     if (this.stopped || !this.ownsRuntime()) return;
@@ -356,7 +426,12 @@ var DraftPDFWatch = {
     if (!b.pending) throw new Error('没有已就绪的新版本，请检查并等待文件写入稳定');
     const {parent, old} = await this.validateTarget(b);
     const wasOpen = !!old && Zotero.Reader._readers.some(r => r.itemID === old.id);
-    const latest = (await this.candidates(b))[0];
+    const selection = await this.candidateSelection(b);
+    if (selection.choices.length) {
+      this.markChoice(b, selection.choices); await this.persist(); this.emit();
+      throw new Error('匹配到不同文档系列，请先选择要更新的文档');
+    }
+    const latest = selection.candidate;
     if (!latest || latest.path !== b.pending.path) throw new Error('候选版本已改变，请重新检查');
     const fp = await this.fingerprint(latest);
     if (fp.hash !== b.pending.hash) { b.pending = null; throw new Error('候选 PDF 内容已变化，请重新检查'); }
