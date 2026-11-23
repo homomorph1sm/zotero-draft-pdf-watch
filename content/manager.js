@@ -97,6 +97,7 @@
   }
   function renderState() {
     const binding = current();
+    syncAttachmentChoices();
     $("rule-status").hidden = !binding;
     $("rule-summary").hidden = !binding;
     $("pending-panel").hidden = !binding?.pending || binding?.status === "choice";
@@ -180,51 +181,59 @@
       ? "按文件名中的数字自然排序；同一论文应使用一致前缀，如 paper_v2.pdf、paper_v10.pdf。"
       : "按磁盘上的文件修改时间选择。复制或下载旧版本也可能改变修改时间，请先查看匹配预览。";
   }
+  function syncAttachmentChoices() {
+    // Keep the radio nodes in place during polling and editing so keyboard
+    // focus survives; only rebuilding the attachment list replaces them.
+    for (const radio of $("attachment-options").querySelectorAll('input[type="radio"]')) {
+      radio.checked = radio.value === $("attachment").value;
+      radio.closest(".attachment-option").classList.toggle("selected", radio.checked);
+    }
+  }
   function attachmentOptions(parent, chosen = undefined) {
     const attachments = parent.attachments || [];
-    const select = $("attachment");
+    const list = $("attachment-options");
     const missing = !!chosen && !attachments.some(a => a.key === chosen);
-    select.replaceChildren();
-    if (missing) {
-      const option = text("option", "", `原绑定附件不可用 [${chosen}] — 请点击修复绑定`);
-      option.value = chosen;
-      option.disabled = true;
-      select.append(option);
+    // An explicitly cleared binding must not silently select a newly added PDF.
+    $("attachment").value = chosen || (chosen === undefined && attachments.length === 1 ? attachments[0].key : "");
+    list.replaceChildren();
+    const addChoice = (key, title, unavailable = false) => {
+      const row = text("label", `attachment-option${unavailable ? " unavailable" : ""}`, "");
+      const radio = text("input", "attachment-radio", "");
+      radio.type = "radio";
+      radio.name = "attachment-choice";
+      radio.value = key;
+      radio.disabled = unavailable;
+      const details = text("span", "attachment-details", "");
+      details.append(text("span", "attachment-name", title), text("span", "attachment-key", `[${key}]`));
+      row.append(radio, details);
+      // The enclosing label handles pointer activation and the native radio
+      // group handles Space/arrow keys, with no popup in the chrome window.
+      radio.addEventListener("input", event => event.stopPropagation());
+      radio.addEventListener("change", event => {
+        event.stopPropagation();
+        if (!radio.checked || radio.disabled || state.busy || !state.parent) return;
+        $("attachment").value = radio.value;
+        markDirty();
+      });
+      list.append(row);
+    };
+    if (missing) addChoice(chosen, "原绑定附件不可用，请选择现存 PDF 或点击修复绑定", true);
+    for (const attachment of attachments) {
+      addChoice(attachment.key, attachment.filename || attachment.title || attachment.key);
     }
     if (!attachments.length) {
-      const option = text("option", "", "暂无 PDF，首次更新时导入附件");
-      option.value = "";
-      select.append(option);
-      select.value = missing ? chosen : "";
+      list.append(text("p", "attachment-empty", "暂无 PDF，首次更新时导入附件"));
       $("attachment-hint").textContent = missing
         ? "原绑定已失效，当前父条目下没有可用 PDF。点击修复绑定后保存，可在下次更新时新增附件；也可先修改路径并保存。"
         : "当前父条目下没有 PDF，首次更新会在此条目下新增附件。";
     } else {
-      if (attachments.length > 1 && !missing) {
-        const option = text("option", "", "请选择要替换的 PDF 附件…");
-        option.value = "";
-        select.append(option);
-      }
-      for (const attachment of attachments) {
-        const title = attachment.filename || attachment.title || attachment.key;
-        const option = text("option", "", `${title}  [${attachment.key}]`);
-        option.value = attachment.key;
-        select.append(option);
-      }
-      select.value = chosen || (chosen === undefined && attachments.length === 1 ? attachments[0].key : "");
-      // A cleared binding with one newly added PDF still needs an explicit choice.
-      if (select.selectedIndex < 0) {
-        const option = text("option", "", "请选择要替换的 PDF 附件…");
-        option.value = "";
-        select.prepend(option);
-        select.value = "";
-      }
       $("attachment-hint").textContent = missing
-        ? "原绑定附件不可用。可在下拉框选择现存 PDF，或点击修复绑定；确认后保存。修改路径、暂停监控和移除绑定仍可用。"
+        ? "原绑定附件不可用。可在列表中选择现存 PDF，或点击修复绑定；确认后保存。修改路径、暂停监控和移除绑定仍可用。"
         : attachments.length > 1
-        ? "该条目有多个 PDF。只替换你选中的这个附件，其他附件保留。"
+        ? "点击一行选择要替换的 PDF，再保存规则。只替换选中的附件，其他附件保留。"
         : "只替换这个 PDF 附件；父条目的元数据和独立笔记保留。";
     }
+    syncAttachmentChoices();
   }
   async function repairAttachment() {
     if (!state.parent) throw new Error("请先选择可编辑的论文条目。");
@@ -246,7 +255,7 @@
     else if (valid) notice("附件列表已刷新，已保存的附件绑定仍有效。");
     else if (attachments.length === 1) notice("已选择当前唯一的 PDF。请核对附件名称，再点击下方「保存监控规则」完成修复。");
     else if (!attachments.length) notice("当前没有 PDF，已选择下次更新时新增附件。点击下方「保存监控规则」完成修复。");
-    else notice("找到多个 PDF，请在下拉框选择要替换的附件，再点击下方「保存监控规则」。");
+    else notice("找到多个 PDF，请在列表中点击要替换的附件，再点击下方「保存监控规则」。");
   }
   function populate(parent, binding = null) {
     state.parent = parent;

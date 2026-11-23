@@ -7,6 +7,7 @@ const { chromium } = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 
 const managerURL = pathToFileURL(process.env.MANAGER_FILE || path.resolve(__dirname, '../content/manager.xhtml')).href;
 const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
+const multiplePDFs = [{ key: 'PDF00001', filename: 'paper_v1.pdf' }, { key: 'PDF00002', filename: 'paper_v2.pdf' }];
 
 (async () => {
   const browser = await chromium.launch({
@@ -122,6 +123,14 @@ const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
   async function click(page, id) {
     await page.locator(id).click();
     await page.waitForFunction(() => !document.getElementById('check-all').disabled);
+  }
+  const attachmentRadio = (page, key) => page.locator(`#attachment-options input[name="attachment-choice"][value="${key}"]`);
+  async function selectAttachment(page, key) {
+    // Use a pointer click on the visible filename, not value injection. The old
+    // select tests missed a broken native popup because they only set .value.
+    await page.locator(`#attachment-options .attachment-option:has(input[value="${key}"]) .attachment-name`).click();
+    assert.equal(await value(page, '#attachment'), key);
+    assert.equal(await attachmentRadio(page, key).evaluate(input => input.checked), true);
   }
   async function visibleInViewport(page, id) {
     assert.equal(await page.locator(id).isVisible(), true, `${id} is visible`);
@@ -334,11 +343,132 @@ const solePDF = [{ key: 'CURRENT1', filename: 'paper_v2.pdf' }];
       await click(page, '#save-rule');
       assert.match(await message(page), /请选择/);
       assert.equal(await page.evaluate(() => testState.saved.length), 0);
-      await edit(page, '#attachment', 'PDF00002', 'change');
+      await selectAttachment(page, 'PDF00002');
       await click(page, '#save-attachment');
       assert.equal(await page.evaluate(() => testState.saved[0].attachmentKey), 'PDF00002');
       assert.equal(await page.locator('#rule-error').isVisible(), false);
-    }, [{ key: 'PDF00001', filename: 'paper_v1.pdf' }, { key: 'PDF00002', filename: 'paper_v2.pdf' }]);
+    }, multiplePDFs);
+
+    await run('every visible attachment row can be clicked and saves its exact attachment key', async page => {
+      assert.equal(await page.locator('#attachment').getAttribute('type'), 'hidden', 'no native attachment popup is used');
+      assert.equal(await page.locator('#attachment-options').getAttribute('role'), 'radiogroup');
+      assert.equal(await attachmentRadio(page, 'MISSING1').isDisabled(), true);
+      assert.equal(await value(page, '#attachment'), 'MISSING1', 'invalid saved key is not silently replaced');
+      for (const key of ['PDF00001', 'PDF00002', 'PDF00001']) {
+        await selectAttachment(page, key);
+        assert.equal(await page.locator('#save-attachment').isVisible(), true);
+        await click(page, '#save-attachment');
+        assert.equal(await page.evaluate(() => testState.saved.at(-1).attachmentKey), key);
+        assert.equal(await value(page, '#attachment'), key);
+        assert.equal(await page.locator('#rule-error').isVisible(), false);
+      }
+    }, multiplePDFs);
+
+    await run('a new binding with multiple attachments requires an explicit visible choice', async page => {
+      await page.evaluate(() => { testState.bindings = []; testState.emit(); });
+      await page.waitForFunction(() => document.getElementById('binding-count').textContent === '0');
+      await click(page, '#new-binding');
+      await edit(page, '#path', 'C:\\Drafts');
+      assert.equal(await value(page, '#attachment'), '');
+      assert.equal(await page.locator('#attachment-options input:checked').count(), 0);
+      await click(page, '#save-rule');
+      assert.match(await message(page), /请选择/);
+      assert.equal(await page.evaluate(() => testState.saved.length), 0);
+      await selectAttachment(page, 'PDF00002');
+      await click(page, '#save-rule');
+      assert.equal(await page.evaluate(() => testState.saved[0].attachmentKey), 'PDF00002');
+    }, multiplePDFs);
+
+    await run('identically named attachments remain distinguishable and save separate keys', async page => {
+      for (const key of ['PDF00002', 'PDF00001']) {
+        await selectAttachment(page, key);
+        const row = page.locator(`#attachment-options .attachment-option:has(input[value="${key}"])`);
+        assert.equal(await row.locator('.attachment-name').textContent(), 'same-name.pdf');
+        assert.match(await row.locator('.attachment-key').textContent(), new RegExp(key));
+        await click(page, '#save-attachment');
+        assert.equal(await page.evaluate(() => testState.saved.at(-1).attachmentKey), key);
+      }
+    }, [{ key: 'PDF00001', filename: 'same-name.pdf' }, { key: 'PDF00002', filename: 'same-name.pdf' }]);
+
+    await run('an explicitly cleared binding does not silently select a newly available sole PDF', async page => {
+      await page.evaluate(() => {
+        Object.assign(testState.bindings[0], { attachmentKey: '', error: null, errorCode: null });
+        testState.emit();
+      });
+      await page.waitForFunction(() => document.getElementById('attachment').value === '');
+      assert.equal(await attachmentRadio(page, 'CURRENT1').evaluate(input => input.checked), false);
+      await click(page, '#save-rule');
+      assert.match(await message(page), /请选择/);
+      assert.equal(await page.evaluate(() => testState.saved.length), 0);
+      await selectAttachment(page, 'CURRENT1');
+      await click(page, '#save-attachment');
+      assert.equal(await page.evaluate(() => testState.saved[0].attachmentKey), 'CURRENT1');
+    });
+
+    await run('attachment selection supports keyboard Space and arrow keys without a popup', async page => {
+      await click(page, '#repair-attachment');
+      const first = attachmentRadio(page, 'PDF00001');
+      await first.focus();
+      await first.press('Space');
+      assert.equal(await value(page, '#attachment'), 'PDF00001');
+      await first.press('ArrowDown');
+      assert.equal(await value(page, '#attachment'), 'PDF00002');
+      assert.equal(await attachmentRadio(page, 'PDF00002').evaluate(input => input === document.activeElement), true);
+      await attachmentRadio(page, 'PDF00002').press('ArrowUp');
+      assert.equal(await value(page, '#attachment'), 'PDF00001');
+      await click(page, '#save-attachment');
+      assert.equal(await page.evaluate(() => testState.saved[0].attachmentKey), 'PDF00001');
+    }, multiplePDFs);
+
+    await run('clicked selection survives background refresh, source edits and failed saves', async page => {
+      await selectAttachment(page, 'PDF00002');
+      await edit(page, '#path', 'C:\\Revised drafts');
+      await page.evaluate(async () => { testState.emit(); await new Promise(resolve => setTimeout(resolve, 0)); });
+      await click(page, '#repair-attachment');
+      assert.equal(await value(page, '#attachment'), 'PDF00002');
+      assert.equal(await attachmentRadio(page, 'PDF00002').evaluate(input => input.checked), true);
+      assert.equal(await value(page, '#path'), 'C:\\Revised drafts');
+      await page.evaluate(() => { testState.saveError = '模拟：规则保存失败'; });
+      await click(page, '#save-attachment');
+      assert.match(await message(page), /保存失败/);
+      assert.equal(await value(page, '#attachment'), 'PDF00002');
+      assert.equal(await attachmentRadio(page, 'PDF00002').evaluate(input => input.checked), true);
+      assert.equal(await page.evaluate(() => testState.bindings[0].attachmentKey), 'MISSING1');
+      await page.evaluate(() => { testState.saveError = null; });
+      await click(page, '#save-attachment');
+      assert.deepEqual(await page.evaluate(() => {
+        const saved = testState.saved.at(-1);
+        return { key: saved.attachmentKey, path: saved.path };
+      }), { key: 'PDF00002', path: 'C:\\Revised drafts' });
+    }, multiplePDFs);
+
+    await run('long Unicode attachment names wrap inside clickable rows and never cover later controls', async page => {
+      await click(page, '#repair-attachment');
+      const rows = page.locator('#attachment-options .attachment-option');
+      assert.equal(await rows.count(), 2);
+      for (const key of ['PDF00001', 'PDF00002']) {
+        await selectAttachment(page, key);
+        const bounds = await page.locator(`#attachment-options .attachment-option:has(input[value="${key}"])`).evaluate(row => {
+          const name = row.querySelector('.attachment-name');
+          const box = row.getBoundingClientRect();
+          const textBox = name.getBoundingClientRect();
+          const next = document.getElementById('mode').getBoundingClientRect();
+          const detail = document.querySelector('.detail');
+          return { row: { left: box.left, right: box.right, top: box.top, bottom: box.bottom },
+            name: { left: textBox.left, right: textBox.right, top: textBox.top, bottom: textBox.bottom },
+            nextTop: next.top, detailWidth: detail.clientWidth, detailScrollWidth: detail.scrollWidth };
+        });
+        assert.ok(bounds.name.left >= bounds.row.left && bounds.name.right <= bounds.row.right + 1);
+        assert.ok(bounds.name.top >= bounds.row.top && bounds.name.bottom <= bounds.row.bottom + 1);
+        assert.ok(bounds.nextTop >= bounds.row.bottom, 'following controls start below the attachment list');
+        assert.ok(bounds.detailScrollWidth <= bounds.detailWidth + 1, 'filenames cannot create horizontal page overflow: ' + JSON.stringify(bounds));
+        await click(page, '#save-attachment');
+        assert.equal(await page.evaluate(() => testState.saved.at(-1).attachmentKey), key);
+      }
+    }, [
+      { key: 'PDF00001', filename: '论文正文_' + '版本说明与附件标题'.repeat(12) + '_v2.pdf' },
+      { key: 'PDF00002', filename: 'Supplement_' + 'LongUnbrokenAttachmentFilename'.repeat(8) + '.pdf' },
+    ], { width: 850, height: 540 });
 
     await run('no remaining PDF supports explicit clearing without an implicit save', async page => {
       assert.equal(await value(page, '#attachment'), 'MISSING1');

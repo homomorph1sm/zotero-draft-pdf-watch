@@ -45,7 +45,7 @@
         <div id="rule-error" class="inline-error" role="status" hidden="hidden"></div>
         <form id="rule-form">
           <fieldset id="form-fields">
-            <div class="field"><div class="attachment-heading"><label for="attachment">要替换的现有 PDF 附件</label><button id="repair-attachment" class="action secondary compact" type="button">刷新附件列表 / 修复绑定</button></div><select id="attachment"></select><p id="attachment-hint" class="hint"></p><button id="save-attachment" class="action primary compact" type="submit" form="rule-form" hidden="hidden">保存并修复绑定</button></div>
+            <div class="field"><div class="attachment-heading"><span id="attachment-label" class="attachment-label">要替换的现有 PDF 附件</span><button id="repair-attachment" class="action secondary compact" type="button">刷新附件列表 / 修复绑定</button></div><input id="attachment" type="hidden" value="" /><div id="attachment-options" class="attachment-options" role="radiogroup" aria-labelledby="attachment-label" aria-describedby="attachment-hint"></div><p id="attachment-hint" class="hint"></p><button id="save-attachment" class="action primary compact" type="submit" form="rule-form" hidden="hidden">保存并修复绑定</button></div>
             <div class="two-columns">
               <div class="field"><label for="mode">监控来源</label><select id="mode"><option value="folder">文件夹中的不同版本</option><option value="file">固定 PDF 文件</option></select></div>
               <div class="field"><label for="order">新版本选择方式</label><select id="order"><option value="version">文件名自然排序（v2 → v10）</option><option value="mtime">文件修改时间（较新优先）</option></select></div>
